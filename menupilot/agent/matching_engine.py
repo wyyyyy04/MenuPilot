@@ -489,8 +489,9 @@ def generate_report(
                 mtype = r.get("match_type", "?")
                 reason = r.get("failure_reason", "?")
                 unmatched = r.get("unmatched_attributes", [])
+                product_name = r.get("template_product_name", "") or "(未知)"
                 lines.append(
-                    f"  行 {i + 1}: "
+                    f"  行 {i + 1} [{product_name}]: "
                     f"商品名分数={score:.1f}, "
                     f"匹配类型={mtype}, "
                     f"原因={reason}"
