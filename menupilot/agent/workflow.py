@@ -17,7 +17,7 @@ except ImportError:
 
 import pandas as pd
 
-from menupilot.agent.matching_engine import generate_console_summary, generate_report as me_generate_report
+from menupilot.agent.matching_engine import generate_console_summary, generate_product_summary, generate_report as me_generate_report
 from menupilot.agent.matching_engine import match
 from menupilot.agent.rule_engine import (
     check_row_completeness,
@@ -67,6 +67,8 @@ class PipelineState(TypedDict, total=False):
     match_results: List[Dict[str, Any]]
     report: str
     console_summary: str
+    product_summary: str       # markdown文本（给LLM消费）
+    summary_path: str          # _summary.xlsx路径
 
     # ── Human Review（用户审核介入）──
     low_conf_rows: List[Dict[str, Any]]
@@ -124,6 +126,8 @@ def make_pipeline_state(
         match_results=None,
         report="",
         console_summary="",
+        product_summary="",
+        summary_path="",
         # 错误信息
         error=None,
         error_step=None,
@@ -408,6 +412,12 @@ def step_write_output(state: PipelineState) -> PipelineState:
         # 写入报告文件（完整日志）
         from pathlib import Path
         Path(state["report_path"]).write_text(state["report"], encoding="utf-8")
+
+        # 生成产品聚合摘要（给 LLM 消费 + 落盘 _summary.xlsx）
+        product_summary_df, product_summary_text = generate_product_summary(state["match_results"])
+        state["product_summary"] = product_summary_text
+        state["summary_path"] = state["output_path"].replace(".xlsx", "_summary.xlsx")
+        product_summary_df.to_excel(state["summary_path"], index=False)
     except Exception as e:
         state["error"] = str(e)
         state["error_step"] = "write_output"
@@ -781,7 +791,7 @@ if __name__ == "__main__":
     os.environ["USE_MOCK_LLM"] = "1"
     import importlib
 
-    importlib.reload(__import__("config"))
+    importlib.reload(__import__("menupilot.config"))
 
     passed = 0
     failed = 0

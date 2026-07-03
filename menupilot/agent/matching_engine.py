@@ -622,6 +622,178 @@ def generate_console_summary(
     return "\n".join(lines)
 
 
+# ── 产品聚合摘要 ─────────────────────────────────────────────────
+
+def summarize_ranges(row_numbers: List[int]) -> str:
+    """将行号列表压缩为区间字符串。
+
+    Args:
+        row_numbers: 已排序的行号列表（1-indexed），如 [1, 2, 3, 5, 8, 9, 10]。
+
+    Returns:
+        区间字符串，如 "1-3, 5, 8-10"。
+    """
+    if not row_numbers:
+        return ""
+
+    ranges = []
+    start = row_numbers[0]
+    end = row_numbers[0]
+
+    for n in row_numbers[1:]:
+        if n == end + 1:
+            end = n
+        else:
+            ranges.append(str(start) if start == end else f"{start}-{end}")
+            start = n
+            end = n
+    ranges.append(str(start) if start == end else f"{start}-{end}")
+
+    return ", ".join(ranges)
+
+
+def _format_main_reason(
+    reason_counter: Counter,
+) -> str:
+    """格式化主要原因。若第二原因行数 > 第一原因 30%，则双显示。
+
+    Args:
+        reason_counter: failure_reason → 出现次数 的 Counter。
+
+    Returns:
+        格式化后的原因文本，如 "主数据中没有奶底「牛奶」（950行）+
+        主数据中没有规格「大杯」（50行）"
+    """
+    top = reason_counter.most_common(2)
+    if not top:
+        return "未知原因"
+
+    first_reason, first_count = top[0]
+    first_text = f"{_format_single_reason(first_reason)}（{first_count}行）"
+
+    if len(top) == 1:
+        return first_text
+
+    second_reason, second_count = top[1]
+    # 第二原因 > 第一原因的 30% → 双显示
+    if second_count / first_count > 0.3:
+        second_text = f"{_format_single_reason(second_reason)}（{second_count}行）"
+        return f"{first_text} + {second_text}"
+
+    return first_text
+
+
+def generate_product_summary(
+    match_results: List[Dict[str, Any]],
+) -> Tuple[Any, str]:
+    """按产品聚合 LOW_CONFIDENCE 行，生成结构化摘要。
+
+    纯代码聚合，不调用 LLM。输出 Excel 用 DataFrame + LLM 用 markdown 文本。
+
+    Args:
+        match_results: match() 返回的结果列表。
+
+    Returns:
+        (df, markdown_text) 元组。
+        df: 列 = 商品名 | 主要原因 | 缺失属性 | 涉及行数 | 涉及行号
+        markdown_text: 全量 markdown 格式表格文本
+    """
+    import pandas as pd
+
+    # ── 统计 ──
+    total = len(match_results)
+    high = sum(1 for r in match_results if r.get("confidence") == HIGH)
+    low = sum(1 for r in match_results if r.get("confidence") == LOW_CONFIDENCE)
+
+    if low == 0:
+        text_lines = [
+            "## 匹配摘要",
+            "",
+            f"- 总行数: {total}",
+            f"- 高置信度: {high} ({100*high/total:.1f}%)" if total > 0 else "- 高置信度: 0",
+            f"- 需确认: 0",
+            "",
+        ]
+        if total == 0:
+            text_lines.append("[!] 匹配结果为空，请检查输入数据。")
+        else:
+            text_lines.append("✅ 所有行均为高置信度匹配，无需确认。")
+        empty_df = pd.DataFrame(columns=["商品名", "主要原因", "缺失属性", "涉及行数", "涉及行号"])
+        return empty_df, "\n".join(text_lines)
+
+    # ── 按产品聚合 ──
+    from collections import defaultdict
+
+    product_data: Dict[str, Dict[str, Any]] = defaultdict(lambda: {
+        "failure_reasons": Counter(),
+        "unmatched_attrs": Counter(),
+        "row_numbers": [],
+    })
+
+    for i, r in enumerate(match_results):
+        if r.get("confidence") != LOW_CONFIDENCE:
+            continue
+        product = str(r.get("template_product_name", "") or "").strip()
+        if not product:
+            product = "(空商品名)"
+
+        reason = r.get("failure_reason") or "UNKNOWN"
+        product_data[product]["failure_reasons"][reason] += 1
+
+        for attr in (r.get("unmatched_attributes") or []):
+            product_data[product]["unmatched_attrs"][attr] += 1
+
+        product_data[product]["row_numbers"].append(i + 1)  # 1-indexed
+
+    # ── 构建 DataFrame 行 ──
+    rows = []
+    for product, data in product_data.items():
+        main_reason = _format_main_reason(data["failure_reasons"])
+
+        # 缺失属性按计数降序
+        attr_items = sorted(data["unmatched_attrs"].items(), key=lambda x: x[1], reverse=True)
+        missing_attrs = "、".join(f"{attr}（{count}行）" for attr, count in attr_items)
+
+        row_count = len(data["row_numbers"])
+        row_ranges = summarize_ranges(sorted(data["row_numbers"]))
+
+        rows.append({
+            "商品名": product,
+            "主要原因": main_reason,
+            "缺失属性": missing_attrs,
+            "涉及行数": row_count,
+            "涉及行号": row_ranges,
+        })
+
+    # 按涉及行数降序
+    rows.sort(key=lambda r: r["涉及行数"], reverse=True)
+    df = pd.DataFrame(rows, columns=["商品名", "主要原因", "缺失属性", "涉及行数", "涉及行号"])
+
+    # ── 生成 markdown 文本 ──
+    high_pct = (100 * high / total) if total > 0 else 0
+    low_pct = (100 * low / total) if total > 0 else 0
+
+    text_lines = [
+        "## 匹配摘要",
+        "",
+        f"- 总行数: {total}",
+        f"- 高置信度: {high} ({high_pct:.1f}%)",
+        f"- 需确认: {low} ({low_pct:.1f}%)",
+        "",
+        "### 产品级明细（按涉及行数降序）",
+        "",
+        "| # | 商品名 | 主要原因 | 缺失属性 | 涉及行数 | 涉及行号 |",
+        "|---|--------|----------|----------|----------|----------|",
+    ]
+
+    for idx, r in enumerate(rows, 1):
+        text_lines.append(
+            f"| {idx} | {r['商品名']} | {r['主要原因']} | {r['缺失属性']} | {r['涉及行数']} | {r['涉及行号']} |"
+        )
+
+    return df, "\n".join(text_lines)
+
+
 # ── Embedding 兜底（可选）──────────────────────────────────────
 
 def build_embedding_index(master_rows: List[Dict[str, Any]]) -> Optional[Any]:
@@ -969,6 +1141,50 @@ if __name__ == "__main__":
     report_high = generate_report(high_only)
     check("需要确认" not in report_high, "全 HIGH 报告不含需要确认段")
     check("高置信匹配：5 行" in report_high, "全 HIGH 报告显示 5 行高置信匹配")
+    print()
+
+    # ── 13. summarize_ranges ──
+    print("13. summarize_ranges 行号区间压缩")
+    check(summarize_ranges([]) == "", "空列表 → 空字符串")
+    check(summarize_ranges([1]) == "1", "单值 → 1")
+    check(summarize_ranges([1, 2, 3]) == "1-3", "连续区间 → 1-3")
+    check(summarize_ranges([1, 2, 3, 5, 8, 9, 10]) == "1-3, 5, 8-10",
+          f"混合区间（实际 {summarize_ranges([1,2,3,5,8,9,10])!r}）")
+    check(summarize_ranges([1, 3, 5]) == "1, 3, 5", "全孤立值 → 1, 3, 5")
+    check(summarize_ranges([100, 101, 200]) == "100-101, 200",
+          f"跨区间（实际 {summarize_ranges([100,101,200])!r}）")
+    print()
+
+    # ── 14. generate_product_summary ──
+    print("14. generate_product_summary 产品聚合摘要")
+    df, text = generate_product_summary(batch_results)
+    # batch_results 有 2 条 LOW_CONFIDENCE: t5(完全不存在的商品XYZ) + t6(浅浅清茶+超大杯)
+    check(len(df) == 2, f"2 个产品（实际 {len(df)}）")
+    # 按涉及行数降序，均为 1 行时保持插入顺序
+    check("浅浅清茶" in df["商品名"].values, "包含浅浅清茶")
+    check("完全不存在的商品XYZ" in df["商品名"].values, "包含完全不存在的商品XYZ")
+    check(df.iloc[0]["涉及行数"] == 1, f"每产品涉及 1 行（实际 {df.iloc[0]['涉及行数']}）")
+    # t6 的 failure_reason 应为 SIZE_NOT_FOUND:超大杯
+    qing_row = df[df["商品名"] == "浅浅清茶"].iloc[0]
+    check("SIZE_NOT_FOUND" in qing_row["主要原因"] or "规格" in qing_row["主要原因"],
+          f"浅浅清茶的原因含规格相关（实际 {qing_row['主要原因']}）")
+    check("涉及行号" in df.columns, "包含涉及行号列")
+    # 单行产品 → 涉及行号为该行号（如 "5" 或 "6"）
+    check("," not in df.iloc[0]["涉及行号"] and "-" not in df.iloc[0]["涉及行号"],
+          f"单行产品涉及行号为纯数字（实际 {df.iloc[0]['涉及行号']}）")
+    # 验证 markdown 文本
+    check("## 匹配摘要" in text, "markdown 含标题")
+    check("浅浅清茶" in text, "markdown 含产品名")
+    # 空 match_results → 正常返回
+    df_empty, text_empty = generate_product_summary([])
+    check(len(df_empty) == 0, "空结果 → 空 DataFrame")
+    check("匹配结果为空" in text_empty, f"全空时显示警告（实际 {text_empty[:80]}）")
+    # 全 HIGH → 显示无需确认
+    high_only = [{"confidence": HIGH, "template_product_name": "x",
+                   "failure_reason": "", "unmatched_attributes": []}]
+    df_high, text_high = generate_product_summary(high_only)
+    check(len(df_high) == 0, "全 HIGH → 空 DataFrame")
+    check("无需确认" in text_high, "全 HIGH → 显示无需确认")
     print()
 
     # ── 汇总 ──

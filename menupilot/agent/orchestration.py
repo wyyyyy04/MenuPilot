@@ -411,6 +411,8 @@ def run_sop_pipeline(args: Optional[list] = None) -> int:
 
     print(f"\n  输出文件: {opts.output}")
     print(f"  校验报告: {report_path}")
+    if state.get("summary_path"):
+        print(f"  产品摘要: {state['summary_path']}")
     return 0
 
 
@@ -464,28 +466,53 @@ def run_sop_pipeline_kwargs(
         )
         elapsed = time.time() - t0
 
-        if state.get("error"):
-            return {
-                "ok": False,
-                "error": state["error"],
-                "error_step": state.get("error_step", ""),
-                "elapsed": elapsed,
-            }
-
-        results = state.get("match_results", [])
-        return {
-            "ok": True,
-            "total_rows": len(results),
-            "high_conf": sum(1 for r in results if r.get("confidence") == "HIGH"),
-            "low_conf": sum(1 for r in results if r.get("confidence") == "LOW_CONFIDENCE"),
-            "report": state.get("console_summary", ""),
-            "api_calls": state.get("api_call_count", 0),
-            "elapsed": elapsed,
+        # 统一默认字段模板 — 成功和失败分支都从这里出发
+        _BASE = {
+            "ok": False,
+            "total_rows": 0,
+            "high_conf": 0,
+            "low_conf": 0,
+            "report": "",
+            "api_calls": 0,
+            "elapsed": 0.0,
             "output_path": output_path,
             "report_path": report_path or output_path.replace(".xlsx", "_report.txt"),
+            "summary_path": "",
+            "error": "",
+            "error_step": "",
         }
+
+        if state.get("error"):
+            _BASE["error"] = state["error"]
+            _BASE["error_step"] = state.get("error_step", "")
+            _BASE["elapsed"] = elapsed
+            return _BASE
+
+        results = state.get("match_results", [])
+        _BASE["ok"] = True
+        _BASE["total_rows"] = len(results)
+        _BASE["high_conf"] = sum(1 for r in results if r.get("confidence") == "HIGH")
+        _BASE["low_conf"] = sum(1 for r in results if r.get("confidence") == "LOW_CONFIDENCE")
+        _BASE["report"] = state.get("product_summary", "")
+        _BASE["api_calls"] = state.get("api_call_count", 0)
+        _BASE["elapsed"] = elapsed
+        _BASE["summary_path"] = state.get("summary_path", "")
+        return _BASE
     except Exception as e:
-        return {"ok": False, "error": str(e), "elapsed": time.time() - t0}
+        return {
+            "ok": False,
+            "total_rows": 0,
+            "high_conf": 0,
+            "low_conf": 0,
+            "report": "",
+            "api_calls": 0,
+            "elapsed": time.time() - t0,
+            "output_path": output_path,
+            "report_path": report_path or output_path.replace(".xlsx", "_report.txt"),
+            "summary_path": "",
+            "error": str(e),
+            "error_step": "",
+        }
 
 
 # ═══════════════════════════════════════════════════════════════════
