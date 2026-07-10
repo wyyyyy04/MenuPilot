@@ -520,6 +520,8 @@ class AgentLoop:
         """内部循环：LLM ↔ 工具执行。"""
         last_error = None
         last_tool_ok = True        # 上一个工具是否返回 ok（非 False）
+        _last_failed_name = None   # 上一个 ok:false 的工具名
+        _last_failed_args = None   # 上一个 ok:false 的工具参数
         tracker = ProgressTracker(patience=3)
 
         for turn in range(1, MAX_TURNS + 1):
@@ -546,6 +548,35 @@ class AgentLoop:
 
             for tc in response["tool_calls"]:
                 name = tc.get("_name", "")
+                args = tc.get("_parsed_args", {})
+
+                # ── 工程兜底 0：ok:false 后禁止同工具同参数重试 ──
+                if not last_tool_ok and _last_failed_name is not None:
+                    if name == _last_failed_name and args == _last_failed_args:
+                        real_error = ""
+                        if isinstance(last_error, dict):
+                            real_error = last_error.get("error", "")
+                        block_msg = {
+                            "error_type": "identical_retry",
+                            "error": (
+                                f"工具 '{name}' 上一次调用已失败（ok:false），"
+                                f"当前参数与上次完全相同，禁止无意义重试。"
+                            ),
+                            "hint": (
+                                f"上一次失败原因: {real_error}\n"
+                                f"请根据此错误信息修改参数后重试（如补充 column_mapping），"
+                                f"或调用 ask_user 将错误展示给用户。"
+                            ),
+                            "fatal": False,
+                        }
+                        if config.DEBUG:
+                            print(f"[DEBUG agent] Guard 0: BLOCKED identical retry of '{name}'")
+                        self.memory.add({"role": "assistant", "content": None,
+                                         "tool_calls": [self._make_tool_msg(tc)]})
+                        self.memory.add({"role": "tool", "tool_call_id": tc["id"],
+                                         "content": json.dumps(block_msg, ensure_ascii=False)})
+                        # 不更新 _last_failed_* — 保持原始失败信息，防止 LLM 反复试探
+                        continue
 
                 # ── 工程兜底 1：ok:false 之后禁止调用 execute_python ──
                 if not last_tool_ok and name == "execute_python":
@@ -586,6 +617,9 @@ class AgentLoop:
                 # ── 更新 last_tool_ok ──
                 if isinstance(result, dict) and "ok" in result:
                     last_tool_ok = result["ok"] is not False
+                    if not last_tool_ok:
+                        _last_failed_name = name
+                        _last_failed_args = dict(args) if isinstance(args, dict) else args
                 else:
                     last_tool_ok = True
 
