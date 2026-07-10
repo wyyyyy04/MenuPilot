@@ -93,7 +93,10 @@ def detect_template_type(df: pd.DataFrame) -> str:
     return "chowbus"
 
 
-def collect_chowbus_rows(df: pd.DataFrame) -> List[Dict[str, Any]]:
+def collect_chowbus_rows(
+    df: pd.DataFrame,
+    token_resolver=None,
+) -> List[Dict[str, Any]]:
     """收集 chowbus 模板的散列字段，输出标准行结构。
 
     对每一行：
@@ -135,7 +138,10 @@ def collect_chowbus_rows(df: pd.DataFrame) -> List[Dict[str, Any]]:
                 continue
             cleaned = _clean_value(val)
             if contains_chinese(cleaned):
-                chinese_values.append(cleaned)
+                if token_resolver is not None:
+                    chinese_values.extend(token_resolver.resolve_composite(cleaned))
+                else:
+                    chinese_values.append(cleaned)
 
         composite_info = ", ".join(chinese_values)
         rows.append({

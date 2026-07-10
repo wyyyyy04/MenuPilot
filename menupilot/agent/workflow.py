@@ -155,7 +155,15 @@ def step_load_data(state: PipelineState) -> PipelineState:
 
         if state["template_type"] == "chowbus":
             # chowbus 类型：收集散列字段，跳过 Schema Analyzer
-            state["chowbus_rows"] = collect_chowbus_rows(raw_df)
+            from menupilot.agent.composite_token_resolver import resolve_composite
+
+            # 轻量 resolver 对象：仅暴露 resolve_composite 方法
+            class _Resolver:
+                @staticmethod
+                def resolve_composite(token):
+                    return resolve_composite(token)
+
+            state["chowbus_rows"] = collect_chowbus_rows(raw_df, token_resolver=_Resolver())
             state["template_df"] = None  # chowbus 不使用标准 template_df
             # 目标列：chowbus 模板固定为 sop_code
             if state["target_col"] == "配料":
