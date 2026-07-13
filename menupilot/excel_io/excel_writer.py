@@ -72,8 +72,8 @@ def write_result(
         ws.cell(row=header_row, column=target_col_idx, value=target_col)
 
     if confidence_col_idx is None:
-        # 置信度列不存在，追加到目标列后面
-        confidence_col_idx = target_col_idx + 1
+        # 置信度列不存在，追加到所有已有列之后（防止覆盖模板隐藏列）
+        confidence_col_idx = max(target_col_idx, max_col) + 1
         ws.cell(row=header_row, column=confidence_col_idx, value=confidence_col)
 
     # 写入数据
