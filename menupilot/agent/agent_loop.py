@@ -555,7 +555,7 @@ class AgentLoop:
                     if name == _last_failed_name and args == _last_failed_args:
                         real_error = ""
                         if isinstance(last_error, dict):
-                            real_error = last_error.get("error", "")
+                            real_error = last_error.get("error") or ""
                         block_msg = {
                             "error_type": "identical_retry",
                             "error": (
@@ -673,8 +673,8 @@ class AgentLoop:
         if last_error:
             return (
                 f"已执行 {MAX_TURNS} 轮，仍未能完成任务。\n\n"
-                f"最后一次失败：{last_error.get('error', '未知')}\n"
-                f"💡 {last_error.get('hint', '请简化需求后重试')}"
+                f"最后一次失败：{last_error.get('error') or '未知'}\n"
+                f"💡 {last_error.get('hint') or '请简化需求后重试'}"
             )
         return f"已执行 {MAX_TURNS} 轮工具调用，仍未完成任务。请简化需求后重试。"
 
