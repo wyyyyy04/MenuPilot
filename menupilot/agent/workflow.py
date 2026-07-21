@@ -232,9 +232,18 @@ def step_preprocess(state: PipelineState) -> PipelineState:
                 cfield = type_map.get(ttype)
                 if cfield and cfield in cr:
                     cr[cfield] = tvalue
-            # 补充：直接收集的中文值可能未被 token 词典识别，
-            # 但标准化层接受部分缺失，匹配引擎会处理通配
             canonical_rows.append(cr)
+
+        # ── 收集未知词（UNKNOWN token），供后续报告使用 ──
+        unknown_token_counts: dict = {}
+        for row in state["chowbus_rows"]:
+            for token in row.get("_tokens", []):
+                ttype = token.get("type", "")
+                if ttype in ("UNKNOWN", "UNKNOWN_TOKEN"):
+                    val = token.get("value", "")
+                    if val:
+                        unknown_token_counts[val] = unknown_token_counts.get(val, 0) + 1
+        state["_chowbus_unknown_tokens"] = unknown_token_counts
 
         state["template_canonical"] = canonical_rows
 
@@ -425,7 +434,45 @@ def step_write_output(state: PipelineState) -> PipelineState:
         product_summary_df, product_summary_text = generate_product_summary(state["match_results"])
         state["product_summary"] = product_summary_text
         state["summary_path"] = state["output_path"].replace(".xlsx", "_summary.xlsx")
-        product_summary_df.to_excel(state["summary_path"], index=False)
+
+        # ── 追加未识别词汇（chowbus）──
+        unknown_tokens = state.get("_chowbus_unknown_tokens", {})
+        if unknown_tokens:
+            unknown_lines = [
+                "",
+                "=" * 56,
+                "🔍 未识别词汇（建议补充到 Token 词典，或用 /memory add 添加）：",
+                "",
+            ]
+            for word, count in sorted(unknown_tokens.items(), key=lambda x: -x[1]):
+                unknown_lines.append(f"  • {word}（出现 {count} 次）")
+            unknown_lines.append("")
+            unknown_lines.append("  使用方式: /memory add <词语> <类型>  （类型: 茶底/奶底/糖度/温度/规格）")
+            unknown_lines.append("=" * 56)
+
+            unknown_block = "\n".join(unknown_lines)
+
+            # 追加到控制台摘要
+            state["console_summary"] = (state["console_summary"] or "") + "\n" + unknown_block
+
+            # 追加到报告文件
+            state["report"] = (state["report"] or "") + "\n" + unknown_block
+
+            # 追加到产品摘要
+            state["product_summary"] = (state["product_summary"] or "") + "\n" + unknown_block
+
+            # 追加到 summary Excel（新增 sheet）
+            import pandas as _pd
+            unknown_df = _pd.DataFrame(
+                [{"未识别词": w, "出现次数": c} for w, c in sorted(unknown_tokens.items(), key=lambda x: -x[1])],
+                columns=["未识别词", "出现次数"],
+            )
+            with _pd.ExcelWriter(state["summary_path"], engine="openpyxl", mode="w") as _writer:
+                product_summary_df.to_excel(_writer, sheet_name="匹配摘要", index=False)
+                unknown_df.to_excel(_writer, sheet_name="未识别词汇", index=False)
+
+        else:
+            product_summary_df.to_excel(state["summary_path"], index=False)
     except Exception as e:
         state["error"] = str(e)
         state["error_step"] = "write_output"
